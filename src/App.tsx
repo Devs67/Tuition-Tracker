@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   ActiveTab,
   TutoringStudent,
@@ -24,24 +24,33 @@ import { AddDepositModal } from './components/AddDepositModal';
 import { InvoiceModal } from './components/InvoiceModal';
 import { AuthModal } from './components/AuthModal';
 import { GoogleSheetSyncModal } from './components/GoogleSheetSyncModal';
-import { formatINR } from './utils/formatters';
 import { AppUser, getActiveUser, logoutUser, subscribeToAuth, setCachedAccessToken } from './services/firebase';
 import { SpreadsheetDetails, AppSyncData } from './services/googleSheetsService';
 
-const STORAGE_KEYS = {
-  STUDENTS: 'paisaledger_students_v2',
-  SESSIONS: 'paisaledger_sessions_v2',
-  TRANSACTIONS: 'paisaledger_transactions_v2',
-  GOALS: 'paisaledger_goals_v2',
-  INSTRUCTOR: 'paisaledger_instructor_v2',
+const BASE_STORAGE_KEYS = {
+  STUDENTS: 'paisaledger_students_v3',
+  SESSIONS: 'paisaledger_sessions_v3',
+  TRANSACTIONS: 'paisaledger_transactions_v3',
+  GOALS: 'paisaledger_goals_v3',
+  INSTRUCTOR: 'paisaledger_instructor_v3',
+  CONNECTED_SHEET: 'paisaledger_connected_sheet_v3',
   THEME: 'paisaledger_theme_v2',
-  CONNECTED_SHEET: 'paisaledger_connected_sheet_v2',
+};
+
+// Helper to get partition key for current user
+const getUserKey = (user: AppUser | null): string => {
+  if (!user || !user.uid) return 'guest';
+  return user.uid.replace(/[^a-zA-Z0-9_-]/g, '_');
+};
+
+const getScopedKey = (baseKey: string, userKey: string): string => {
+  return `${baseKey}_${userKey}`;
 };
 
 export default function App() {
-  // Theme state
+  // Theme state (global across users on this device)
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.THEME);
+    const saved = localStorage.getItem(BASE_STORAGE_KEYS.THEME);
     return saved === 'dark' ? 'dark' : 'light';
   });
 
@@ -53,7 +62,7 @@ export default function App() {
       document.documentElement.classList.remove('dark');
       document.documentElement.setAttribute('data-theme', 'light');
     }
-    localStorage.setItem(STORAGE_KEYS.THEME, theme);
+    localStorage.setItem(BASE_STORAGE_KEYS.THEME, theme);
   }, [theme]);
 
   const toggleTheme = () => {
@@ -63,19 +72,82 @@ export default function App() {
   // 3 Primary Tabs: 'tuition' | 'finance' | 'save-to-buy'
   const [activeTab, setActiveTab] = useState<ActiveTab>('tuition');
 
-  // Instructor Name
-  const [instructorName, setInstructorName] = useState<string>(() => {
-    return localStorage.getItem(STORAGE_KEYS.INSTRUCTOR) || 'Dev Chintu';
-  });
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.INSTRUCTOR, instructorName);
-  }, [instructorName]);
-
   // Authentication State
   const [currentUser, setCurrentUser] = useState<AppUser | null>(() => getActiveUser());
   const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(null);
 
+  // Active user partition key
+  const userKey = getUserKey(currentUser);
+  const previousUserKeyRef = useRef<string>(userKey);
+
+  // Helper to load user-specific data from localStorage with migration fallback
+  const loadUserPartition = (key: string) => {
+    const scopedKey = getScopedKey(BASE_STORAGE_KEYS.STUDENTS, key);
+    const existing = localStorage.getItem(scopedKey);
+
+    // If partitioned data exists for this user, load it
+    if (existing) {
+      try {
+        const parsedStudents = JSON.parse(existing);
+        const parsedSessions = JSON.parse(localStorage.getItem(getScopedKey(BASE_STORAGE_KEYS.SESSIONS, key)) || '[]');
+        const parsedTransactions = JSON.parse(localStorage.getItem(getScopedKey(BASE_STORAGE_KEYS.TRANSACTIONS, key)) || '[]');
+        const parsedGoals = JSON.parse(localStorage.getItem(getScopedKey(BASE_STORAGE_KEYS.GOALS, key)) || '[]');
+        const parsedInstructor = localStorage.getItem(getScopedKey(BASE_STORAGE_KEYS.INSTRUCTOR, key)) || (currentUser?.displayName || 'Tutor');
+        const sheetRaw = localStorage.getItem(getScopedKey(BASE_STORAGE_KEYS.CONNECTED_SHEET, key));
+        const parsedSheet = sheetRaw ? JSON.parse(sheetRaw) : null;
+
+        return {
+          students: parsedStudents,
+          sessions: parsedSessions,
+          transactions: parsedTransactions,
+          goals: parsedGoals,
+          instructorName: parsedInstructor,
+          connectedSheet: parsedSheet,
+        };
+      } catch (err) {
+        console.error('Error loading partitioned user data', err);
+      }
+    }
+
+    // Check v2 legacy unpartitioned data for seamless migration of guest / initial user
+    const legacyStudents = localStorage.getItem('paisaledger_students_v2');
+    if (legacyStudents && key === 'guest') {
+      try {
+        return {
+          students: JSON.parse(legacyStudents),
+          sessions: JSON.parse(localStorage.getItem('paisaledger_sessions_v2') || '[]'),
+          transactions: JSON.parse(localStorage.getItem('paisaledger_transactions_v2') || '[]'),
+          goals: JSON.parse(localStorage.getItem('paisaledger_goals_v2') || '[]'),
+          instructorName: localStorage.getItem('paisaledger_instructor_v2') || 'Dev Chintu',
+          connectedSheet: null,
+        };
+      } catch (e) {
+        // Fall back to template
+      }
+    }
+
+    // Default template data for a fresh user
+    return {
+      students: INITIAL_STUDENTS,
+      sessions: INITIAL_SESSIONS,
+      transactions: INITIAL_TRANSACTIONS,
+      goals: INITIAL_PURCHASE_GOALS,
+      instructorName: currentUser?.displayName || 'Dev Chintu',
+      connectedSheet: null,
+    };
+  };
+
+  // State definitions initialized for current user partition
+  const initialData = useMemo(() => loadUserPartition(userKey), []);
+
+  const [instructorName, setInstructorName] = useState<string>(initialData.instructorName);
+  const [students, setStudents] = useState<TutoringStudent[]>(initialData.students);
+  const [sessions, setSessions] = useState<TutoringSession[]>(initialData.sessions);
+  const [transactions, setTransactions] = useState<FinanceTransaction[]>(initialData.transactions);
+  const [goals, setGoals] = useState<PurchaseGoal[]>(initialData.goals);
+  const [connectedSheet, setConnectedSheet] = useState<SpreadsheetDetails | null>(initialData.connectedSheet);
+
+  // Subscribe to auth state changes
   useEffect(() => {
     const unsubscribe = subscribeToAuth((user) => {
       setCurrentUser(user);
@@ -83,77 +155,66 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Connected Google Spreadsheet Details
-  const [connectedSheet, setConnectedSheet] = useState<SpreadsheetDetails | null>(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEYS.CONNECTED_SHEET);
-      return raw ? JSON.parse(raw) : null;
-    } catch {
-      return null;
+  // When active user switches (e.g. login, switch account, sign out):
+  // 1. Save prior user's state to their partitioned keys
+  // 2. Load the newly active user's separated records
+  useEffect(() => {
+    if (previousUserKeyRef.current !== userKey) {
+      const prevKey = previousUserKeyRef.current;
+      // Save departing user's state
+      localStorage.setItem(getScopedKey(BASE_STORAGE_KEYS.STUDENTS, prevKey), JSON.stringify(students));
+      localStorage.setItem(getScopedKey(BASE_STORAGE_KEYS.SESSIONS, prevKey), JSON.stringify(sessions));
+      localStorage.setItem(getScopedKey(BASE_STORAGE_KEYS.TRANSACTIONS, prevKey), JSON.stringify(transactions));
+      localStorage.setItem(getScopedKey(BASE_STORAGE_KEYS.GOALS, prevKey), JSON.stringify(goals));
+      localStorage.setItem(getScopedKey(BASE_STORAGE_KEYS.INSTRUCTOR, prevKey), instructorName);
+      if (connectedSheet) {
+        localStorage.setItem(getScopedKey(BASE_STORAGE_KEYS.CONNECTED_SHEET, prevKey), JSON.stringify(connectedSheet));
+      } else {
+        localStorage.removeItem(getScopedKey(BASE_STORAGE_KEYS.CONNECTED_SHEET, prevKey));
+      }
+
+      // Switch to newly active user's partition
+      const nextData = loadUserPartition(userKey);
+      setStudents(nextData.students);
+      setSessions(nextData.sessions);
+      setTransactions(nextData.transactions);
+      setGoals(nextData.goals);
+      setInstructorName(currentUser?.displayName || nextData.instructorName);
+      setConnectedSheet(nextData.connectedSheet);
+
+      // Update previous key tracker
+      previousUserKeyRef.current = userKey;
     }
-  });
+  }, [userKey]);
+
+  // Continuously persist current user's state to their specific storage keys
+  useEffect(() => {
+    localStorage.setItem(getScopedKey(BASE_STORAGE_KEYS.STUDENTS, userKey), JSON.stringify(students));
+  }, [students, userKey]);
+
+  useEffect(() => {
+    localStorage.setItem(getScopedKey(BASE_STORAGE_KEYS.SESSIONS, userKey), JSON.stringify(sessions));
+  }, [sessions, userKey]);
+
+  useEffect(() => {
+    localStorage.setItem(getScopedKey(BASE_STORAGE_KEYS.TRANSACTIONS, userKey), JSON.stringify(transactions));
+  }, [transactions, userKey]);
+
+  useEffect(() => {
+    localStorage.setItem(getScopedKey(BASE_STORAGE_KEYS.GOALS, userKey), JSON.stringify(goals));
+  }, [goals, userKey]);
+
+  useEffect(() => {
+    localStorage.setItem(getScopedKey(BASE_STORAGE_KEYS.INSTRUCTOR, userKey), instructorName);
+  }, [instructorName, userKey]);
 
   useEffect(() => {
     if (connectedSheet) {
-      localStorage.setItem(STORAGE_KEYS.CONNECTED_SHEET, JSON.stringify(connectedSheet));
+      localStorage.setItem(getScopedKey(BASE_STORAGE_KEYS.CONNECTED_SHEET, userKey), JSON.stringify(connectedSheet));
     } else {
-      localStorage.removeItem(STORAGE_KEYS.CONNECTED_SHEET);
+      localStorage.removeItem(getScopedKey(BASE_STORAGE_KEYS.CONNECTED_SHEET, userKey));
     }
-  }, [connectedSheet]);
-
-  // Core Data States with localStorage persistence
-  const [students, setStudents] = useState<TutoringStudent[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEYS.STUDENTS);
-      return saved ? JSON.parse(saved) : INITIAL_STUDENTS;
-    } catch {
-      return INITIAL_STUDENTS;
-    }
-  });
-
-  const [sessions, setSessions] = useState<TutoringSession[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEYS.SESSIONS);
-      return saved ? JSON.parse(saved) : INITIAL_SESSIONS;
-    } catch {
-      return INITIAL_SESSIONS;
-    }
-  });
-
-  const [transactions, setTransactions] = useState<FinanceTransaction[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEYS.TRANSACTIONS);
-      return saved ? JSON.parse(saved) : INITIAL_TRANSACTIONS;
-    } catch {
-      return INITIAL_TRANSACTIONS;
-    }
-  });
-
-  const [goals, setGoals] = useState<PurchaseGoal[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEYS.GOALS);
-      return saved ? JSON.parse(saved) : INITIAL_PURCHASE_GOALS;
-    } catch {
-      return INITIAL_PURCHASE_GOALS;
-    }
-  });
-
-  // Sync states to localStorage
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.STUDENTS, JSON.stringify(students));
-  }, [students]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.SESSIONS, JSON.stringify(sessions));
-  }, [sessions]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.TRANSACTIONS, JSON.stringify(transactions));
-  }, [transactions]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.GOALS, JSON.stringify(goals));
-  }, [goals]);
+  }, [connectedSheet, userKey]);
 
   // Bundle app data for Google Sheets sync
   const appData: AppSyncData = useMemo(() => ({
@@ -204,7 +265,6 @@ export default function App() {
       prev.map((s) => {
         if (s.id === id) {
           const updatedPaid = !s.isPaid;
-          // If marked paid, optionally record in Finance Ledger
           if (updatedPaid) {
             const student = students.find((st) => st.id === s.studentId);
             const studentName = student?.name || 'Student';
@@ -313,18 +373,18 @@ export default function App() {
     );
   };
 
-  // Reset to initial demo data
+  // Reset to initial demo data for current user
   const handleResetData = () => {
     if (
       window.confirm(
-        'Are you sure you want to reset all data back to the sample records? Any custom entries will be replaced.'
+        `Are you sure you want to reset all data for ${currentUser?.displayName || 'the current user'} back to sample records?`
       )
     ) {
       setStudents(INITIAL_STUDENTS);
       setSessions(INITIAL_SESSIONS);
       setTransactions(INITIAL_TRANSACTIONS);
       setGoals(INITIAL_PURCHASE_GOALS);
-      setInstructorName('Dev Chintu');
+      setInstructorName(currentUser?.displayName || 'Dev Chintu');
     }
   };
 
@@ -397,14 +457,14 @@ export default function App() {
           <TuitionLogView
             students={students}
             sessions={sessions}
+            instructorName={instructorName}
+            setInstructorName={setInstructorName}
             onAddStudent={handleAddStudent}
             onDeleteStudent={handleDeleteStudent}
             onAddSession={handleAddSession}
             onDeleteSession={handleDeleteSession}
             onToggleSessionPaid={handleToggleSessionPaid}
             onOpenInvoice={handleOpenInvoice}
-            instructorName={instructorName}
-            setInstructorName={setInstructorName}
           />
         )}
 
@@ -437,11 +497,11 @@ export default function App() {
           <div className="flex items-center gap-3">
             {connectedSheet && (
               <span className="text-emerald-700 dark:text-emerald-400 font-semibold">
-                ● Synced with Google Sheets
+                ● Synced with Google Sheets ({currentUser ? currentUser.displayName : 'Guest'})
               </span>
             )}
             <span>
-              Protected with user authentication &amp; cloud storage.
+              {currentUser ? `Logged in as ${currentUser.displayName} (Isolated Workspace)` : 'Guest Mode (Local Workspace)'}
             </span>
           </div>
         </div>
