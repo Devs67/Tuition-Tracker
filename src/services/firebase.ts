@@ -100,6 +100,20 @@ export const signInWithGoogle = async (): Promise<{ user: AppUser; accessToken: 
     return { user: appUser, accessToken: token };
   } catch (error: any) {
     console.error('Google Sign In Error:', error);
+    if (error?.code === 'auth/unauthorized-domain') {
+      const currentHost = typeof window !== 'undefined' ? window.location.hostname : 'devs67.github.io';
+      const customErr: any = new Error(
+        `Firebase domain authorization required: "${currentHost}" is not yet added to Authorized Domains in Firebase Console.`
+      );
+      customErr.code = 'auth/unauthorized-domain';
+      customErr.domain = currentHost;
+      throw customErr;
+    }
+    if (error?.code === 'auth/popup-closed-by-user') {
+      const customErr: any = new Error('Google Sign-In popup was closed before completing. Please try again.');
+      customErr.code = error.code;
+      throw customErr;
+    }
     throw error;
   } finally {
     isSigningIn = false;
@@ -121,18 +135,30 @@ export const signInWithPassword = async (email: string, pass: string): Promise<A
     localStorage.removeItem(CURRENT_LOCAL_USER_KEY);
     return appUser;
   } catch (firebaseErr: any) {
-    // Graceful fallback to verified local user registry if Firebase email/pass provider is restricted
+    // Graceful fallback to verified local user registry if Firebase email/pass provider is restricted or unauthorized domain
     const localUsers = getLocalUsers();
     const found = localUsers.find((u) => u.email.toLowerCase() === email.toLowerCase());
-    if (found && found.passwordHash === btoa(pass)) {
-      const appUser: AppUser = {
-        uid: found.uid,
-        email: found.email,
-        displayName: found.displayName,
-        provider: 'password',
-      };
-      localStorage.setItem(CURRENT_LOCAL_USER_KEY, JSON.stringify(appUser));
-      return appUser;
+    if (found) {
+      if (found.passwordHash === btoa(pass)) {
+        const appUser: AppUser = {
+          uid: found.uid,
+          email: found.email,
+          displayName: found.displayName,
+          provider: 'password',
+        };
+        localStorage.setItem(CURRENT_LOCAL_USER_KEY, JSON.stringify(appUser));
+        return appUser;
+      }
+      throw new Error('Incorrect password for this user. Please try again.');
+    }
+
+    if (firebaseErr?.code === 'auth/unauthorized-domain') {
+      throw new Error(
+        "No account found for this email on this device. Please switch to the '+ Add User' tab above to register your account first."
+      );
+    }
+    if (firebaseErr?.code === 'auth/user-not-found' || firebaseErr?.code === 'auth/invalid-credential') {
+      throw new Error("Invalid email or password. If you don't have an account yet, click '+ Add User' above.");
     }
     throw new Error(firebaseErr?.message || 'Invalid email or password.');
   }

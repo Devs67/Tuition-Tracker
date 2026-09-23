@@ -10,7 +10,9 @@ import {
   AlertCircle,
   Unlink,
   ShieldCheck,
-  Check
+  Check,
+  ShieldAlert,
+  Copy
 } from 'lucide-react';
 import {
   createPaisaLedgerSpreadsheet,
@@ -50,8 +52,27 @@ export const GoogleSheetSyncModal: React.FC<GoogleSheetSyncModalProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [copiedDomain, setCopiedDomain] = useState(false);
 
   if (!isOpen) return null;
+
+  const currentHostname = typeof window !== 'undefined' ? window.location.hostname : 'devs67.github.io';
+
+  const handleCopyDomain = async () => {
+    try {
+      await navigator.clipboard.writeText(currentHostname);
+      setCopiedDomain(true);
+      setTimeout(() => setCopiedDomain(false), 2000);
+    } catch {
+      // fallback
+    }
+  };
+
+  const isDomainUnauthorized = errorMsg && (
+    errorMsg.toLowerCase().includes('unauthorized-domain') ||
+    errorMsg.toLowerCase().includes('domain authorization') ||
+    errorMsg.toLowerCase().includes('authorized domains')
+  );
 
   // Helper to ensure we have a valid Google Access Token
   const ensureGoogleToken = async (): Promise<string> => {
@@ -179,8 +200,50 @@ export const GoogleSheetSyncModal: React.FC<GoogleSheetSyncModalProps> = ({
           </div>
         </div>
 
+        {/* Domain Authorization Notice & Instructions */}
+        {isDomainUnauthorized && (
+          <div className="mb-5 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/25 text-amber-900 dark:text-amber-200 text-xs">
+            <div className="flex items-start gap-2 mb-2">
+              <ShieldAlert className="w-5 h-5 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
+              <div>
+                <h4 className="font-bold text-amber-950 dark:text-amber-100 text-sm">
+                  Authorize GitHub Pages Domain for Google Sheets Sync
+                </h4>
+                <p className="text-[11px] mt-0.5 opacity-90 leading-relaxed">
+                  To allow Google Sheets OAuth popups on your live website, Firebase requires whitelisting your domain in the Firebase Console.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-2.5 pt-2.5 border-t border-amber-500/20 space-y-2.5">
+              <div className="flex items-center justify-between gap-2 p-2 rounded-xl bg-white/70 dark:bg-black/30 border border-amber-500/20">
+                <span className="font-mono text-[11px] font-bold text-[#1C2B22] dark:text-[#EAE4D0] select-all truncate">
+                  {currentHostname}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleCopyDomain}
+                  className="shrink-0 px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-bold flex items-center gap-1 transition-colors shadow-xs"
+                >
+                  {copiedDomain ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                  {copiedDomain ? 'Copied!' : 'Copy Domain'}
+                </button>
+              </div>
+
+              <div className="text-[11px] text-[#5B6856] dark:text-[#97A08C] space-y-1">
+                <p className="font-semibold text-amber-950 dark:text-amber-200">How to add in Firebase Console (30 sec):</p>
+                <ol className="list-decimal list-inside space-y-0.5 pl-0.5">
+                  <li>Open <strong>Firebase Console</strong> &rarr; select project <code className="font-mono text-[10px]">project-5c464bd1-d462-429d-b47</code></li>
+                  <li>Click <strong>Authentication</strong> in the sidebar &rarr; <strong>Settings</strong> tab &rarr; <strong>Authorized domains</strong></li>
+                  <li>Click <strong>Add domain</strong>, paste <span className="font-mono font-semibold">{currentHostname}</span>, and click Save.</li>
+                </ol>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Status Messages */}
-        {errorMsg && (
+        {errorMsg && !isDomainUnauthorized && (
           <div className="mb-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 dark:bg-rose-950/50 dark:border-rose-900 dark:text-rose-300 text-xs flex items-start gap-2">
             <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600" />
             <span>{errorMsg}</span>
