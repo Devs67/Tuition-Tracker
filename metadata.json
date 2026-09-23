@@ -1,0 +1,7 @@
+{
+  "name": "Tuition & Personal Finance Tracker",
+  "description": "Indian Rupee (₹) tuition session logger, personal income & expense finance tracker, and smart savings goal planner to buy whatever you want.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
